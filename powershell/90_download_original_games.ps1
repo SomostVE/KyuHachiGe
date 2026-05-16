@@ -1,6 +1,15 @@
 # 90_download_original_games.ps1
 # KyuHachiGe original games downloader
 # Internal game version ZIPs such as FD/HD/CD remain zipped.
+#
+# Current logic:
+# - 1 external ZIP = 1 studio/archive group.
+# - Normal studio ZIPs are extracted into PC98\StudioName.
+# - The studio folder is kept. Games are NOT moved out of the studio folder.
+# - Example: PC98\Alice Soft\GameName\GameName [HD].zip
+# - The outer studio ZIP is deleted after successful extraction.
+# - BIOS / OS / Utilities / EA / Electronic Arts / Microsoft archives are kept as ZIP files in PC98\whatever.
+# - The script checks Archive.org ZIP entries against the local PC98 folder and skips what already exists.
 
 $ErrorActionPreference = "Stop"
 
@@ -223,6 +232,35 @@ function Get-ArchiveDownloadUrl {
     return "https://archive.org/download/$Identifier/$(ConvertTo-ArchiveUrlPath $ArchivePath)"
 }
 
+function Get-RemoteSize {
+    param($FileObject)
+
+    $remoteSize = 0
+
+    try {
+        [void][Int64]::TryParse([string]$FileObject.size, [ref]$remoteSize)
+    } catch {}
+
+    return $remoteSize
+}
+
+function Test-FileSizeMatches {
+    param(
+        [string]$Path,
+        [Int64]$RemoteSize
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    if ($RemoteSize -le 0) {
+        return $true
+    }
+
+    return ((Get-Item -LiteralPath $Path).Length -eq $RemoteSize)
+}
+
 function Test-IsWhateverArchive {
     param([string]$Name)
 
@@ -302,73 +340,10 @@ function Get-LocalStudioZipName {
     return $safeLeaf
 }
 
-function Get-UniqueDestination {
-    param(
-        [string]$Path,
-        [bool]$IsDirectory
-    )
+function Get-StudioFolderName {
+    param([string]$SafeLeaf)
 
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $Path
-    }
-
-    $parent = Split-Path -Parent $Path
-
-    if ($IsDirectory) {
-        $name = Split-Path -Leaf $Path
-        $ext = ""
-    } else {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($Path)
-        $ext = [System.IO.Path]::GetExtension($Path)
-    }
-
-    $i = 2
-
-    while ($true) {
-        $candidate = Join-Path $parent "$name ($i)$ext"
-
-        if (-not (Test-Path -LiteralPath $candidate)) {
-            return $candidate
-        }
-
-        $i++
-    }
-}
-
-function Test-IsSpecialFolderName {
-    param([string]$Name)
-
-    $n = $Name.ToLowerInvariant()
-    return ($n -match '^(bios|system|systems|os|dos|utility|utilities|tools?|drivers?|manuals?|materials?|extras?|docs?|documentation|whatever)$')
-}
-
-function Test-IsGameVersionZipName {
-    param([string]$Name)
-
-    $n = $Name.ToLowerInvariant()
-    return (
-        $n -match '\[(hd|fd|cd|hdd|hdi|fdd)\]' -or
-        $n -match '\((hd|fd|cd|hdd|hdi|fdd)\)' -or
-        $n -match '\b(hd|fd|cd|hdd|hdi|fdd)\b'
-    )
-}
-
-function Test-FolderLooksLikeGameFolder {
-    param([string]$FolderPath)
-
-    $versionZip = Get-ChildItem -LiteralPath $FolderPath -File -Filter "*.zip" -ErrorAction SilentlyContinue |
-        Where-Object { Test-IsGameVersionZipName $_.Name } |
-        Select-Object -First 1
-
-    if ($versionZip) {
-        return $true
-    }
-
-    $anyImage = Get-ChildItem -LiteralPath $FolderPath -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension.ToLowerInvariant() -in @(".hdi", ".hdd", ".nhd", ".fdi", ".d88", ".hdm", ".xdf", ".nfd", ".fdd", ".iso", ".cue", ".ccd") } |
-        Select-Object -First 1
-
-    return ($null -ne $anyImage)
+    return [System.IO.Path]::GetFileNameWithoutExtension($SafeLeaf)
 }
 
 function Fix-DuplicatedNestedFolder {
@@ -392,49 +367,165 @@ function Fix-DuplicatedNestedFolder {
     }
 
     Remove-Item -LiteralPath $inner -Force
+    Write-Ok "Fixed duplicated nested folder: $folderName\$folderName"
 }
 
-function Expose-GameFoldersFromStudioFolder {
+function Get-ArchiveStatus {
     param(
-        [string]$StudioFolder,
-        [string]$Pc98Root
+        $Paths,
+        $FileObject
     )
 
-    if (-not (Test-Path -LiteralPath $StudioFolder -PathType Container)) {
-        return 0
-    }
+    $archivePath = [string]$FileObject.name
+    $remoteLeaf = [System.IO.Path]::GetFileName($archivePath)
+    $safeLeaf = Get-LocalStudioZipName $archivePath
+    $studioName = Get-StudioFolderName $safeLeaf
+    $downloadUrl = Get-ArchiveDownloadUrl -Identifier $OriginalArchiveIdentifier -ArchivePath $archivePath
+    $remoteSize = Get-RemoteSize $FileObject
+    $isWhatever = Test-IsWhateverArchive $remoteLeaf
 
-    Fix-DuplicatedNestedFolder -FolderPath $StudioFolder
+    if ($isWhatever) {
+        $whateverRoot = Join-Path $Paths.PC98 "whatever"
+        $whateverZip = Join-Path $whateverRoot $safeLeaf
+        $whateverPart = "$whateverZip.part"
 
-    $moved = 0
-
-    $topIsGame = Test-FolderLooksLikeGameFolder $StudioFolder
-
-    if ($topIsGame) {
-        return 0
-    }
-
-    $children = Get-ChildItem -LiteralPath $StudioFolder -Directory -ErrorAction SilentlyContinue |
-        Where-Object {
-            -not (Test-IsSpecialFolderName $_.Name) -and
-            (Test-FolderLooksLikeGameFolder $_.FullName)
+        if (Test-FileSizeMatches -Path $whateverZip -RemoteSize $remoteSize) {
+            $status = "Complete"
+        } elseif (Test-Path -LiteralPath $whateverZip -PathType Leaf) {
+            $status = "IncompleteZip"
+        } elseif (Test-Path -LiteralPath $whateverPart -PathType Leaf) {
+            $status = "PartialDownload"
+        } else {
+            $status = "Missing"
         }
 
-    foreach ($child in $children) {
-        $dest = Join-Path $Pc98Root $child.Name
-        $dest = Get-UniqueDestination -Path $dest -IsDirectory $true
-
-        Move-Item -LiteralPath $child.FullName -Destination $dest
-        $moved++
+        return [pscustomobject]@{
+            ArchivePath = $archivePath
+            RemoteLeaf = $remoteLeaf
+            SafeLeaf = $safeLeaf
+            StudioName = $studioName
+            DownloadUrl = $downloadUrl
+            RemoteSize = $remoteSize
+            IsWhatever = $true
+            LocalZip = $whateverZip
+            StudioFolder = ""
+            Status = $status
+        }
     }
 
-    $remaining = @(Get-ChildItem -LiteralPath $StudioFolder -Force -ErrorAction SilentlyContinue)
+    $localZip = Join-Path $Paths.PC98 $safeLeaf
+    $localPart = "$localZip.part"
+    $studioFolder = Join-Path $Paths.PC98 $studioName
 
-    if ($remaining.Count -eq 0) {
-        Remove-Item -LiteralPath $StudioFolder -Force
+    if (Test-Path -LiteralPath $studioFolder -PathType Container) {
+        $status = "Complete"
+    } elseif (Test-FileSizeMatches -Path $localZip -RemoteSize $remoteSize) {
+        $status = "ZipReadyToExtract"
+    } elseif (Test-Path -LiteralPath $localZip -PathType Leaf) {
+        $status = "IncompleteZip"
+    } elseif (Test-Path -LiteralPath $localPart -PathType Leaf) {
+        $status = "PartialDownload"
+    } else {
+        $status = "Missing"
     }
 
-    return $moved
+    return [pscustomobject]@{
+        ArchivePath = $archivePath
+        RemoteLeaf = $remoteLeaf
+        SafeLeaf = $safeLeaf
+        StudioName = $studioName
+        DownloadUrl = $downloadUrl
+        RemoteSize = $remoteSize
+        IsWhatever = $false
+        LocalZip = $localZip
+        StudioFolder = $studioFolder
+        Status = $status
+    }
+}
+
+function Process-Archive {
+    param(
+        $Paths,
+        $Item
+    )
+
+    if ($Item.IsWhatever) {
+        $whateverRoot = Join-Path $Paths.PC98 "whatever"
+        Ensure-Directory $whateverRoot
+
+        if ($Item.Status -eq "Complete") {
+            Write-WarnLine "Already present in whatever, skipped: $($Item.SafeLeaf)"
+            return [pscustomobject]@{ Downloaded = 0; Extracted = 0; Fixed = 0; WhateverKept = 0; Skipped = 1 }
+        }
+
+        if (Test-Path -LiteralPath "$($Item.LocalZip).part" -PathType Leaf) {
+            Remove-Item -LiteralPath "$($Item.LocalZip).part" -Force
+        }
+
+        if ($Item.Status -eq "IncompleteZip" -and (Test-Path -LiteralPath $Item.LocalZip -PathType Leaf)) {
+            Remove-Item -LiteralPath $Item.LocalZip -Force
+        }
+
+        Download-FileSafe -Uri $Item.DownloadUrl -OutFile $Item.LocalZip
+        Write-Ok "Downloaded to whatever without extraction: $($Item.SafeLeaf)"
+
+        return [pscustomobject]@{ Downloaded = 1; Extracted = 0; Fixed = 0; WhateverKept = 1; Skipped = 0 }
+    }
+
+    if ($Item.Status -eq "Complete") {
+        Write-WarnLine "Studio folder already exists, skipped: $($Item.StudioName)"
+        return [pscustomobject]@{ Downloaded = 0; Extracted = 0; Fixed = 0; WhateverKept = 0; Skipped = 1 }
+    }
+
+    if ($Item.Status -eq "PartialDownload") {
+        Remove-Item -LiteralPath "$($Item.LocalZip).part" -Force
+    }
+
+    if ($Item.Status -eq "IncompleteZip" -and (Test-Path -LiteralPath $Item.LocalZip -PathType Leaf)) {
+        Remove-Item -LiteralPath $Item.LocalZip -Force
+    }
+
+    $downloaded = 0
+
+    if ($Item.Status -ne "ZipReadyToExtract") {
+        Download-FileSafe -Uri $Item.DownloadUrl -OutFile $Item.LocalZip
+        $downloaded = 1
+        Write-Ok "Downloaded: $($Item.SafeLeaf)"
+    } else {
+        Write-Ok "Using already downloaded ZIP: $($Item.SafeLeaf)"
+    }
+
+    if (Test-Path -LiteralPath $Item.StudioFolder -PathType Container) {
+        Remove-Item -LiteralPath $Item.StudioFolder -Recurse -Force
+    }
+
+    Ensure-Directory $Item.StudioFolder
+
+    try {
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($Item.LocalZip, $Item.StudioFolder)
+    } catch {
+        if (Test-Path -LiteralPath $Item.StudioFolder -PathType Container) {
+            Remove-Item -LiteralPath $Item.StudioFolder -Recurse -Force
+        }
+
+        throw
+    }
+
+    Write-Ok "Extracted studio folder: $($Item.StudioName)"
+
+    Remove-Item -LiteralPath $Item.LocalZip -Force
+    Write-Ok "Deleted archive ZIP after successful extraction."
+
+    $beforeFix = (Get-ChildItem -LiteralPath $Item.StudioFolder -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+    Fix-DuplicatedNestedFolder -FolderPath $Item.StudioFolder
+    $afterFix = (Get-ChildItem -LiteralPath $Item.StudioFolder -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+
+    $fixed = 0
+    if ($beforeFix -ne $afterFix) {
+        $fixed = 1
+    }
+
+    return [pscustomobject]@{ Downloaded = $downloaded; Extracted = 1; Fixed = $fixed; WhateverKept = 0; Skipped = 0 }
 }
 
 Show-Banner
@@ -450,13 +541,6 @@ Write-InfoLine "Output:"
 Write-Host "          $($paths.PC98)"
 Write-Host ""
 
-$confirm = Read-YesNo "Continue with original games download?"
-
-if (-not $confirm) {
-    Write-WarnLine "Canceled."
-    exit 0
-}
-
 Ensure-Directory $paths.PC98
 
 try {
@@ -471,83 +555,65 @@ if ($studioZips.Count -eq 0) {
     exit 0
 }
 
-Write-Ok "Studio ZIP files selected: $($studioZips.Count)"
+$items = New-Object System.Collections.Generic.List[object]
+
+foreach ($file in $studioZips) {
+    $items.Add((Get-ArchiveStatus -Paths $paths -FileObject $file)) | Out-Null
+}
+
+$completeItems = @($items | Where-Object { $_.Status -eq "Complete" })
+$toProcess = @($items | Where-Object { $_.Status -ne "Complete" })
+$missingItems = @($items | Where-Object { $_.Status -eq "Missing" })
+$readyItems = @($items | Where-Object { $_.Status -eq "ZipReadyToExtract" })
+$partialItems = @($items | Where-Object { $_.Status -eq "PartialDownload" -or $_.Status -eq "IncompleteZip" })
+
+Write-Host "Status summary" -ForegroundColor Cyan
+Write-Host "--------------" -ForegroundColor Cyan
+Write-Host "Remote ZIP files:            $($items.Count)"
+Write-Host "Already complete:            $($completeItems.Count)"
+Write-Host "Missing:                     $($missingItems.Count)"
+Write-Host "Downloaded ZIPs to extract:  $($readyItems.Count)"
+Write-Host "Partial/incomplete ZIPs:     $($partialItems.Count)"
+Write-Host "Items to process:            $($toProcess.Count)"
+Write-Host ""
+
+if ($toProcess.Count -eq 0) {
+    Write-Ok "Original/raw PC-98 library appears complete."
+    exit 0
+}
+
+$resume = Read-YesNo "Resume/download missing original games now?"
+
+if (-not $resume) {
+    Write-WarnLine "Canceled."
+    exit 0
+}
+
 Write-Host ""
 
 $index = 0
 $downloaded = 0
 $skipped = 0
 $extracted = 0
-$movedGames = 0
+$fixedFolders = 0
 $whateverKept = 0
 $failed = 0
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-foreach ($file in $studioZips) {
+foreach ($item in $toProcess) {
     $index++
 
-    $archivePath = [string]$file.name
-    $remoteLeaf = [System.IO.Path]::GetFileName($archivePath)
-    $safeLeaf = Get-LocalStudioZipName $archivePath
-    $studioName = [System.IO.Path]::GetFileNameWithoutExtension($safeLeaf)
-    $downloadUrl = Get-ArchiveDownloadUrl -Identifier $OriginalArchiveIdentifier -ArchivePath $archivePath
-
-    Write-InfoLine "[$index/$($studioZips.Count)] $remoteLeaf"
-
-    if (Test-IsWhateverArchive $remoteLeaf) {
-        $whateverRoot = Join-Path $paths.PC98 "whatever"
-        Ensure-Directory $whateverRoot
-
-        $whateverZip = Join-Path $whateverRoot $safeLeaf
-
-        try {
-            if (Test-Path -LiteralPath $whateverZip -PathType Leaf) {
-                Write-WarnLine "Already present in whatever, skipped: $safeLeaf"
-                $skipped++
-                continue
-            }
-
-            Download-FileSafe -Uri $downloadUrl -OutFile $whateverZip
-            $downloaded++
-            $whateverKept++
-            Write-Ok "Downloaded to whatever without extraction: $safeLeaf"
-            continue
-        } catch {
-            $failed++
-            Write-Missing "Failed: $(Get-ErrorText $_)"
-            continue
-        }
-    }
-
-    $localZip = Join-Path $paths.PC98 $safeLeaf
-    $studioFolder = Join-Path $paths.PC98 $studioName
+    Write-InfoLine "[$index/$($toProcess.Count)] $($item.RemoteLeaf)"
 
     try {
-        if (Test-Path -LiteralPath $studioFolder -PathType Container) {
-            Write-WarnLine "Studio folder already exists, skipped: $studioName"
-            $skipped++
-            continue
-        }
+        $result = Process-Archive -Paths $paths -Item $item
 
-        Download-FileSafe -Uri $downloadUrl -OutFile $localZip
-        $downloaded++
-        Write-Ok "Downloaded: $safeLeaf"
-
-        Ensure-Directory $studioFolder
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($localZip, $studioFolder)
-        $extracted++
-        Write-Ok "Extracted: $studioName"
-
-        Remove-Item -LiteralPath $localZip -Force
-        Write-Ok "Deleted archive ZIP after successful extraction."
-
-        $moved = Expose-GameFoldersFromStudioFolder -StudioFolder $studioFolder -Pc98Root $paths.PC98
-        $movedGames += $moved
-
-        if ($moved -gt 0) {
-            Write-Ok "Moved game folders to PC98 root: $moved"
-        }
+        $downloaded += $result.Downloaded
+        $skipped += $result.Skipped
+        $extracted += $result.Extracted
+        $fixedFolders += $result.Fixed
+        $whateverKept += $result.WhateverKept
     } catch {
         $failed++
         Write-Missing "Failed: $(Get-ErrorText $_)"
@@ -556,13 +622,10 @@ foreach ($file in $studioZips) {
 }
 
 Write-Host ""
-Write-Ok "Original games download completed."
+Write-Ok "Original games download/resume completed."
 Write-Host "Downloaded:              $downloaded"
 Write-Host "Skipped:                 $skipped"
 Write-Host "Extracted studios:       $extracted"
-Write-Host "Moved games:             $movedGames"
+Write-Host "Fixed nested folders:    $fixedFolders"
 Write-Host "Kept in whatever as ZIP: $whateverKept"
 Write-Host "Failed:                  $failed"
-
-Write-Host "Moved games:       $movedGames"
-Write-Host "Failed:            $failed"
