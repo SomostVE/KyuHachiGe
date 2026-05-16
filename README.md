@@ -5,7 +5,7 @@ Portable tools to simplify NEC PC-98 game setup and emulation on Windows.
 KyuHachiGe helps you create a clean local PC-98 setup with:
 
 - an English patched PC-98 game library
-- optional original/raw PC-98 games
+- optional original PC-98 games
 - RetroArch portable for emulation
 - Playnite as a frontend to list and launch your games
 
@@ -73,7 +73,7 @@ Use it only if you also want the original PC-98 library (it's 80Go).
 
 ---
 
-## 3. Folder structure
+## 3.1. Folder structure
 
 After setup, your folder will look like this if you want both patched and original games :
 
@@ -104,7 +104,7 @@ KyuHachiGe
 
 ---
 
-## 4. Menu explanation
+## 3.2. Menu explanation (if you want some informations)
 
 ### `[1] Check environment`
 
@@ -180,7 +180,7 @@ emulator
    └─ retroarch.exe
 ```
 
-You also need the RetroArch core (which you get after a quick setup):
+You also need the RetroArch core (which you get after with the retroarch setup):
 
 ```text
 NEC - PC-98 (Neko Project II Kai)
@@ -218,8 +218,7 @@ Output folder:
 PC98
 ```
 
-The original library uses a different structure from the patched library.
-The script extracts the studio archive, deletes the outer ZIP after successful extraction, and keeps the internal game ZIPs.
+it will download, unzip and keep a folder for each studio with the games and zipped files inside.
 
 ---
 
@@ -229,17 +228,33 @@ Closes the menu.
 
 ---
 
-## 5. RetroArch notes
+## 4. RetroArch notes
 
-SOON
+start "retroarch.exe"
 
-## 6. Playnite setup
+PC98 core installation :
 
-You will be to have download either some original games or patched games (option [2] or [o] )
+- Main menu -> Load Core -> Download a core
+- scroll to the N, you will find "NEC - PC-98 (Neko Project II Kai)"
 
-### 1. setup an emulator
+and thats about it
+in most cases, BIOS files are not required but if you do need :  https://ia800401.us.archive.org/view_archive.php?archive=/18/items/NeoKobe-NecPc-98012017-11-17/BIOS.zip
+
+but you will want a new font and better sounds, you can use same as me in "emulator_system", dump everything in "emulator\RetroArch-Win64\system\np2kai\" next to "np2kai.cfg" which should already be here
+
+if np2kai.cfg isnt here try to launch the core :
+- Main Menu -> Load Core -> NEC - PC-98 (Neko Project II Kai)
+- let it load until it become a black screen with nothing (it's about 10 seconds max)
+- check your folder again
+---
+
+## 5. Playnite setup
+
+You will need to download either some original games or patched games (option [2] or [o] )
+
+### a. setup an emulator
  
-- click on the controler top left
+- click on the controller top left
 - go to "Library" then "configure emulators"
 - "add" at the bottom
 Name : Retroarch PC98
@@ -248,9 +263,9 @@ Emulation specification : Retroarch
 at the bottom there is "add" and will open a like, choose "Neko Project II Kai"
 - "save" bottom right
 
-### 2. Setup the scan
+### b. Setup the scan
 
-- Again click on the controler top left
+- Again click on the controller top left
 - "Add game" -> "Emulated game" -> "Add scanner" (bottom left)
 Scan with emulator : Retroarch PC98 | Profile : Neko Project II Kai
 Scan Folder : it will be either \KyuHachiGe\PC98 Patched or \KyuHachiGe\PC98
@@ -259,8 +274,19 @@ X (check box) "save as auto-scan" which you can name PC98 Patched or PC98 librar
 "Start Scan" (bottom right)
 and now it will scan the folder, show a new windows with the list of everything and just click import
 
+Playnite will re-scan everytime you open the app with this configuration
 
-## 7. Important note
+### c. Additionnal step
+you might want the images and stuff ? 
+
+- Controller -> Add-on -> under the browser section click on "metadata sources"
+- look for playniteVndb (check later if you want others) -> install
+- Controller -> library -> Download Metadata -> "Next" bottom right (dont no need to change anything)
+- at the top next to "apply to all" click and select "VNDB" then apply to all
+
+if you "edit" a game you will see bottom right "download metadat" where you can search for the name of the game, i mainly use that if the first one doesnt work well
+
+## 6. Important note
 
 KyuHachiGe is only a helper for organizing and preparing a local PC-98 setup. I made this because for such a old system there is actually almost nothing to help enjoying it
 
