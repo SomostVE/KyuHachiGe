@@ -1,4 +1,4 @@
-﻿# 90_download_original_games.ps1
+# 90_download_original_games.ps1
 # KyuHachiGe original games downloader
 # 1 external ZIP = 1 studio archive.
 # The outer ZIP is extracted, then deleted after successful extraction.
@@ -206,20 +206,37 @@ $OriginalMetadataUrl = "https://archive.org/metadata/$OriginalArchiveIdentifier"
 $OriginalDetailsUrl = "https://archive.org/details/$OriginalArchiveIdentifier"
 
 function Test-IsWantedOriginalStudioZip {
-    param([string]$ArchivePath)
+    param($FileObject)
 
-    if ([string]::IsNullOrWhiteSpace($ArchivePath)) {
+    if ($null -eq $FileObject) {
         return $false
     }
 
-    $normalized = $ArchivePath.Replace("\", "/")
+    $archivePath = [string]$FileObject.name
+
+    if ([string]::IsNullOrWhiteSpace($archivePath)) {
+        return $false
+    }
+
+    $normalized = $archivePath.Replace("\", "/")
     $lower = $normalized.ToLowerInvariant()
     $leaf = [System.IO.Path]::GetFileName($lower)
 
-    if (-not $lower.EndsWith(".zip")) {
+    # Archive.org "ZIP FILES" section is format-based.
+    # Some entries can be ZIP format even when the displayed name has no .zip extension.
+    $format = ""
+    try {
+        $format = ([string]$FileObject.format).ToLowerInvariant()
+    } catch {}
+
+    $isZip = $lower.EndsWith(".zip") -or ($format -eq "zip")
+
+    if (-not $isZip) {
         return $false
     }
 
+    # Only take top-level studio ZIP archives.
+    # Internal paths are not part of the studio archive list.
     if ($normalized.Contains("/")) {
         return $false
     }
@@ -239,8 +256,31 @@ function Get-OriginalStudioZipList {
     $metadata = Invoke-JsonRequest $OriginalMetadataUrl
 
     return @($metadata.files |
-        Where-Object { Test-IsWantedOriginalStudioZip ([string]$_.name) } |
+        Where-Object { Test-IsWantedOriginalStudioZip $_ } |
         Sort-Object name)
+}
+
+function Get-LocalStudioZipName {
+    param([string]$ArchivePath)
+
+    $leaf = [System.IO.Path]::GetFileName($ArchivePath)
+    $safeLeaf = Sanitize-Name $leaf
+
+    if ([string]::IsNullOrWhiteSpace([System.IO.Path]::GetExtension($safeLeaf))) {
+        $safeLeaf = "$safeLeaf.zip"
+    }
+
+    return $safeLeaf
+}
+
+
+function Get-ArchiveDownloadUrl {
+    param(
+        [string]$Identifier,
+        [string]$ArchivePath
+    )
+
+    return "https://archive.org/download/$Identifier/$(ConvertTo-ArchiveUrlPath $ArchivePath)"
 }
 
 function Get-UniqueDestination {
@@ -384,7 +424,7 @@ Show-Banner
 $paths = Get-KyuHachiGePaths
 
 Write-WarnLine "This option downloads the original/raw PC-98 collection."
-Write-WarnLine "It is large, and PC98 is created only when this option is used."
+Write-WarnLine "It is large (80 GB)."
 Write-Host ""
 Write-InfoLine "Source:"
 Write-Host "          $OriginalDetailsUrl"
@@ -430,7 +470,7 @@ foreach ($file in $studioZips) {
 
     $archivePath = [string]$file.name
     $remoteLeaf = [System.IO.Path]::GetFileName($archivePath)
-    $safeLeaf = Sanitize-Name $remoteLeaf
+    $safeLeaf = Get-LocalStudioZipName $archivePath
     $studioName = [System.IO.Path]::GetFileNameWithoutExtension($safeLeaf)
 
     $localZip = Join-Path $paths.PC98 $safeLeaf
