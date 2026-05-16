@@ -1,7 +1,5 @@
 # 90_download_original_games.ps1
 # KyuHachiGe original games downloader
-# 1 external ZIP = 1 studio archive.
-# The outer ZIP is extracted, then deleted after successful extraction.
 # Internal game version ZIPs such as FD/HD/CD remain zipped.
 
 $ErrorActionPreference = "Stop"
@@ -12,7 +10,6 @@ try {
     $OutputEncoding = [System.Text.Encoding]::UTF8
     [Net.ServicePointManager]::SecurityProtocol = 3072
 } catch {}
-
 
 function Show-Banner {
     Write-Host ""
@@ -28,7 +25,6 @@ function Show-Banner {
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
-
 
 function Get-KyuHachiGePaths {
     $currentScriptDir = $PSScriptRoot
@@ -58,11 +54,25 @@ function Get-KyuHachiGePaths {
     }
 }
 
+function Write-Ok {
+    param([string]$Message)
+    Write-Host "[OK]      $Message" -ForegroundColor Green
+}
 
-function Write-Ok { param([string]$Message) Write-Host "[OK]      $Message" -ForegroundColor Green }
-function Write-WarnLine { param([string]$Message) Write-Host "[WARN]    $Message" -ForegroundColor Yellow }
-function Write-Missing { param([string]$Message) Write-Host "[MISSING] $Message" -ForegroundColor Red }
-function Write-InfoLine { param([string]$Message) Write-Host "[INFO]    $Message" -ForegroundColor Cyan }
+function Write-WarnLine {
+    param([string]$Message)
+    Write-Host "[WARN]    $Message" -ForegroundColor Yellow
+}
+
+function Write-Missing {
+    param([string]$Message)
+    Write-Host "[MISSING] $Message" -ForegroundColor Red
+}
+
+function Write-InfoLine {
+    param([string]$Message)
+    Write-Host "[INFO]    $Message" -ForegroundColor Cyan
+}
 
 function Ensure-Directory {
     param([string]$Path)
@@ -200,10 +210,39 @@ function Read-YesNo {
     }
 }
 
-
 $OriginalArchiveIdentifier = "NeoKobe-NecPc-98012017-11-17"
 $OriginalMetadataUrl = "https://archive.org/metadata/$OriginalArchiveIdentifier"
 $OriginalDetailsUrl = "https://archive.org/details/$OriginalArchiveIdentifier"
+
+function Get-ArchiveDownloadUrl {
+    param(
+        [string]$Identifier,
+        [string]$ArchivePath
+    )
+
+    return "https://archive.org/download/$Identifier/$(ConvertTo-ArchiveUrlPath $ArchivePath)"
+}
+
+function Test-IsWhateverArchive {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $false
+    }
+
+    $n = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    $n = [System.Net.WebUtility]::HtmlDecode($n)
+    $n = $n.ToLowerInvariant()
+
+    return (
+        $n -match '(^|[\s\-_\.])(bios|bio)([\s\-_\.]|$)' -or
+        $n -match '(^|[\s\-_\.])(os|dos|ms-dos|system|systems)([\s\-_\.]|$)' -or
+        $n -match '(^|[\s\-_\.])(utility|utilities|tool|tools|driver|drivers)([\s\-_\.]|$)' -or
+        $n -match '(^|[\s\-_\.])(ea)([\s\-_\.]|$)' -or
+        $n -match 'electronic[\s\-_\.]*arts' -or
+        $n -match 'microsoft'
+    )
+}
 
 function Test-IsWantedOriginalStudioZip {
     param($FileObject)
@@ -220,11 +259,9 @@ function Test-IsWantedOriginalStudioZip {
 
     $normalized = $archivePath.Replace("\", "/")
     $lower = $normalized.ToLowerInvariant()
-    $leaf = [System.IO.Path]::GetFileName($lower)
 
-    # Archive.org "ZIP FILES" section is format-based.
-    # Some entries can be ZIP format even when the displayed name has no .zip extension.
     $format = ""
+
     try {
         $format = ([string]$FileObject.format).ToLowerInvariant()
     } catch {}
@@ -235,17 +272,9 @@ function Test-IsWantedOriginalStudioZip {
         return $false
     }
 
-    # Only take top-level studio ZIP archives.
-    # Internal paths are not part of the studio archive list.
+    # The original collection uses top-level ZIPs as studio/archive containers.
+    # Sub-paths are ignored here to avoid treating internal files as studio archives.
     if ($normalized.Contains("/")) {
-        return $false
-    }
-
-    if ($leaf -in @("bios.zip", "os.zip")) {
-        return $false
-    }
-
-    if ($leaf -match "(bios|operating.system|utility|utilities|drivers)") {
         return $false
     }
 
@@ -271,16 +300,6 @@ function Get-LocalStudioZipName {
     }
 
     return $safeLeaf
-}
-
-
-function Get-ArchiveDownloadUrl {
-    param(
-        [string]$Identifier,
-        [string]$ArchivePath
-    )
-
-    return "https://archive.org/download/$Identifier/$(ConvertTo-ArchiveUrlPath $ArchivePath)"
 }
 
 function Get-UniqueDestination {
@@ -320,7 +339,7 @@ function Test-IsSpecialFolderName {
     param([string]$Name)
 
     $n = $Name.ToLowerInvariant()
-    return ($n -match '^(bios|system|systems|os|dos|utility|utilities|tools?|drivers?|manuals?|materials?|extras?|docs?|documentation)$')
+    return ($n -match '^(bios|system|systems|os|dos|utility|utilities|tools?|drivers?|manuals?|materials?|extras?|docs?|documentation|whatever)$')
 }
 
 function Test-IsGameVersionZipName {
@@ -418,7 +437,6 @@ function Expose-GameFoldersFromStudioFolder {
     return $moved
 }
 
-
 Show-Banner
 
 $paths = Get-KyuHachiGePaths
@@ -461,6 +479,7 @@ $downloaded = 0
 $skipped = 0
 $extracted = 0
 $movedGames = 0
+$whateverKept = 0
 $failed = 0
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -472,12 +491,37 @@ foreach ($file in $studioZips) {
     $remoteLeaf = [System.IO.Path]::GetFileName($archivePath)
     $safeLeaf = Get-LocalStudioZipName $archivePath
     $studioName = [System.IO.Path]::GetFileNameWithoutExtension($safeLeaf)
-
-    $localZip = Join-Path $paths.PC98 $safeLeaf
-    $studioFolder = Join-Path $paths.PC98 $studioName
     $downloadUrl = Get-ArchiveDownloadUrl -Identifier $OriginalArchiveIdentifier -ArchivePath $archivePath
 
     Write-InfoLine "[$index/$($studioZips.Count)] $remoteLeaf"
+
+    if (Test-IsWhateverArchive $remoteLeaf) {
+        $whateverRoot = Join-Path $paths.PC98 "whatever"
+        Ensure-Directory $whateverRoot
+
+        $whateverZip = Join-Path $whateverRoot $safeLeaf
+
+        try {
+            if (Test-Path -LiteralPath $whateverZip -PathType Leaf) {
+                Write-WarnLine "Already present in whatever, skipped: $safeLeaf"
+                $skipped++
+                continue
+            }
+
+            Download-FileSafe -Uri $downloadUrl -OutFile $whateverZip
+            $downloaded++
+            $whateverKept++
+            Write-Ok "Downloaded to whatever without extraction: $safeLeaf"
+            continue
+        } catch {
+            $failed++
+            Write-Missing "Failed: $(Get-ErrorText $_)"
+            continue
+        }
+    }
+
+    $localZip = Join-Path $paths.PC98 $safeLeaf
+    $studioFolder = Join-Path $paths.PC98 $studioName
 
     try {
         if (Test-Path -LiteralPath $studioFolder -PathType Container) {
@@ -513,8 +557,12 @@ foreach ($file in $studioZips) {
 
 Write-Host ""
 Write-Ok "Original games download completed."
-Write-Host "Downloaded:        $downloaded"
-Write-Host "Skipped:           $skipped"
-Write-Host "Extracted studios: $extracted"
+Write-Host "Downloaded:              $downloaded"
+Write-Host "Skipped:                 $skipped"
+Write-Host "Extracted studios:       $extracted"
+Write-Host "Moved games:             $movedGames"
+Write-Host "Kept in whatever as ZIP: $whateverKept"
+Write-Host "Failed:                  $failed"
+
 Write-Host "Moved games:       $movedGames"
 Write-Host "Failed:            $failed"
